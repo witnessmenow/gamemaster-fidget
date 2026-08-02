@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Block Builder</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f8ff;
+      --panel: #ffffff;
+      --text: #223;
+      --accent: #4d7cff;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Trebuchet MS", "Segoe UI", Arial, sans-serif;
+      background: linear-gradient(180deg, #dce9ff 0%, var(--bg) 50%, #fff8eb 100%);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px;
+    }
+
+    .game-shell {
+      width: min(100%, 920px);
+      display: grid;
+      gap: 10px;
+      background: color-mix(in srgb, var(--panel) 88%, #e6eeff 12%);
+      border-radius: 16px;
+      padding: 12px;
+      box-shadow: 0 8px 24px rgba(38, 55, 117, 0.18);
+    }
+
+    .top {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .title {
+      font-size: clamp(1.1rem, 2.8vw, 1.5rem);
+      margin: 0;
+    }
+
+    .scoreboard {
+      display: flex;
+      gap: 14px;
+      font-weight: 700;
+      font-size: 0.98rem;
+    }
+
+    .controls {
+      display: grid;
+      gap: 10px;
+      background: #f6f9ff;
+      border: 1px solid #dbe5ff;
+      border-radius: 12px;
+      padding: 10px;
+    }
+
+    .control-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .label {
+      font-size: 0.9rem;
+      font-weight: 700;
+      margin-right: 4px;
+    }
+
+    button {
+      border: none;
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-weight: 700;
+      cursor: pointer;
+      touch-action: manipulation;
+      transition: transform 0.1s ease;
+    }
+
+    button:active { transform: scale(0.96); }
+
+    .size-btn {
+      background: #e7edff;
+      color: #1c2658;
+      border: 2px solid transparent;
+    }
+
+    .size-btn.active {
+      border-color: var(--accent);
+      background: #d9e5ff;
+    }
+
+    .color-swatch {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      border: 2px solid #ffffff;
+      box-shadow: 0 0 0 1px rgba(22, 32, 80, 0.2);
+      padding: 0;
+    }
+
+    .color-swatch.active {
+      box-shadow: 0 0 0 3px #1f336b;
+    }
+
+    .ghost {
+      width: 36px;
+      height: 18px;
+      border-radius: 4px;
+      border: 2px solid #6478af;
+      background: #dbe8ff;
+    }
+
+    canvas {
+      width: 100%;
+      aspect-ratio: 16 / 10;
+      max-height: 72vh;
+      border-radius: 12px;
+      border: 2px solid #cfdbff;
+      background: linear-gradient(180deg, #ebf2ff 0%, #f7fbff 55%, #fff5e2 100%);
+      touch-action: none;
+      display: block;
+    }
+
+    .hint {
+      margin: 0;
+      font-size: 0.85rem;
+      color: #48527a;
+    }
+
+    @media (max-width: 560px) {
+      .scoreboard { width: 100%; justify-content: space-between; }
+      .top { gap: 4px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="game-shell">
+    <div class="top">
+      <h1 class="title">🧱 Kid Block Builder</h1>
+      <div class="scoreboard">
+        <span>Height Score: <strong id="score">0</strong></span>
+        <span>High Score: <strong id="high-score">0</strong></span>
+      </div>
+    </div>
+
+    <section class="controls" aria-label="Block controls">
+      <div class="control-row" id="size-controls">
+        <span class="label">Block Length:</span>
+      </div>
+      <div class="control-row" id="color-controls">
+        <span class="label">Block Color:</span>
+      </div>
+      <p class="hint">Tap or click in the play area to drop your block. Build as high as you can!</p>
+    </section>
+
+    <canvas id="game" width="960" height="600" aria-label="2D block building game"></canvas>
+  </main>
+
+  <script>
+    (() => {
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+      const scoreEl = document.getElementById("score");
+      const highScoreEl = document.getElementById("high-score");
+      const sizeControls = document.getElementById("size-controls");
+      const colorControls = document.getElementById("color-controls");
+
+      const STORAGE_KEY = "kid-block-builder-high-score";
+      const WORLD = {
+        gravity: 2600,
+        bounce: 0.14,
+        friction: 0.9,
+        dt: 1 / 60,
+        width: canvas.width,
+        height: canvas.height,
+        floorY: canvas.height - 22,
+        wallPadding: 8
+      };
+
+      const BLOCK_HEIGHT = 34;
+      const BLOCK_LENGTHS = [70, 110, 150];
+      const COLORS = [
+        "#f28c8c", "#f3b562", "#f5df72", "#83d68b",
+        "#6fc9ec", "#8490ef", "#bf8be8", "#f59ecf"
+      ];
+
+      const state = {
+        blocks: [],
+        nextLength: BLOCK_LENGTHS[1],
+        nextColor: COLORS[0],
+        score: 0,
+        highScore: Number(localStorage.getItem(STORAGE_KEY) || 0),
+        pointerX: WORLD.width / 2,
+      };
+
+      highScoreEl.textContent = state.highScore.toFixed(0);
+
+      const audio = {
+        ctx: null,
+        enabled: false,
+      };
+
+      function initAudio() {
+        if (!audio.ctx) {
+          audio.ctx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audio.ctx.state === "suspended") {
+          audio.ctx.resume();
+        }
+        audio.enabled = true;
+      }
+
+      function playImpact(strength) {
+        if (!audio.enabled || !audio.ctx || strength < 180) return;
+        const time = audio.ctx.currentTime;
+        const osc = audio.ctx.createOscillator();
+        const gain = audio.ctx.createGain();
+        osc.type = "triangle";
+        const clamped = Math.min(700, strength);
+        osc.frequency.setValueAtTime(130 + clamped * 0.13, time);
+        gain.gain.setValueAtTime(Math.min(0.18, clamped / 4000), time);
+        gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.12);
+        osc.connect(gain);
+        gain.connect(audio.ctx.destination);
+        osc.start(time);
+        osc.stop(time + 0.13);
+      }
+
+      function makeControls() {
+        BLOCK_LENGTHS.forEach((length, i) => {
+          const btn = document.createElement("button");
+          btn.className = "size-btn" + (i === 1 ? " active" : "");
+          btn.textContent = `${length / 10}x`;
+          btn.type = "button";
+          btn.addEventListener("click", () => {
+            initAudio();
+            state.nextLength = length;
+            [...sizeControls.querySelectorAll("button")].forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+          });
+          sizeControls.appendChild(btn);
+        });
+
+        COLORS.forEach((color, i) => {
+          const btn = document.createElement("button");
+          btn.className = "color-swatch" + (i === 0 ? " active" : "");
+          btn.style.background = color;
+          btn.type = "button";
+          btn.setAttribute("aria-label", `Choose color ${i + 1}`);
+          btn.addEventListener("click", () => {
+            initAudio();
+            state.nextColor = color;
+            [...colorControls.querySelectorAll("button")].forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+          });
+          colorControls.appendChild(btn);
+        });
+      }
+
+      function dropBlock(x) {
+        const width = state.nextLength;
+        const clampedX = Math.min(WORLD.width - WORLD.wallPadding - width / 2, Math.max(WORLD.wallPadding + width / 2, x));
+        state.blocks.push({
+          x: clampedX,
+          y: 38,
+          w: width,
+          h: BLOCK_HEIGHT,
+          color: state.nextColor,
+          vx: 0,
+          vy: 0,
+          resting: false,
+          lastImpact: 0,
+        });
+      }
+
+      function updatePhysics() {
+        for (const block of state.blocks) {
+          block.resting = false;
+          block.vy += WORLD.gravity * WORLD.dt;
+          block.x += block.vx * WORLD.dt;
+          block.y += block.vy * WORLD.dt;
+
+          const halfW = block.w / 2;
+          const halfH = block.h / 2;
+
+          if (block.x - halfW < WORLD.wallPadding) {
+            block.x = WORLD.wallPadding + halfW;
+            block.vx *= -WORLD.bounce;
+          } else if (block.x + halfW > WORLD.width - WORLD.wallPadding) {
+            block.x = WORLD.width - WORLD.wallPadding - halfW;
+            block.vx *= -WORLD.bounce;
+          }
+
+          const floorTop = WORLD.floorY;
+          if (block.y + halfH > floorTop) {
+            const impact = Math.abs(block.vy);
+            block.y = floorTop - halfH;
+            block.vy *= -WORLD.bounce;
+            block.vx *= WORLD.friction;
+            if (Math.abs(block.vy) < 45) {
+              block.vy = 0;
+              block.resting = true;
+            }
+            if (impact > block.lastImpact + 60) {
+              playImpact(impact);
+              block.lastImpact = impact;
+            }
+          }
+        }
+
+        for (let i = 0; i < state.blocks.length; i++) {
+          for (let j = i + 1; j < state.blocks.length; j++) {
+            resolveCollision(state.blocks[i], state.blocks[j]);
+          }
+        }
+      }
+
+      function resolveCollision(a, b) {
+        const dx = b.x - a.x;
+        const px = (a.w + b.w) / 2 - Math.abs(dx);
+        if (px <= 0) return;
+
+        const dy = b.y - a.y;
+        const py = (a.h + b.h) / 2 - Math.abs(dy);
+        if (py <= 0) return;
+
+        if (py < px) {
+          const push = py / 2;
+          if (dy > 0) {
+            a.y -= push;
+            b.y += push;
+          } else {
+            a.y += push;
+            b.y -= push;
+          }
+
+          const relV = Math.abs(a.vy - b.vy);
+          const aOldVy = a.vy;
+          a.vy = (b.vy * WORLD.bounce);
+          b.vy = (aOldVy * WORLD.bounce);
+          if (relV > 150) playImpact(relV);
+
+          if (Math.abs(a.vy) < 45) a.vy = 0;
+          if (Math.abs(b.vy) < 45) b.vy = 0;
+          if (a.vy === 0) a.resting = true;
+          if (b.vy === 0) b.resting = true;
+        } else {
+          const push = px / 2;
+          if (dx > 0) {
+            a.x -= push;
+            b.x += push;
+          } else {
+            a.x += push;
+            b.x -= push;
+          }
+
+          const temp = a.vx;
+          a.vx = b.vx * WORLD.bounce;
+          b.vx = temp * WORLD.bounce;
+        }
+      }
+
+      function updateScore() {
+        if (!state.blocks.length) {
+          state.score = 0;
+        } else {
+          const minTop = Math.min(...state.blocks.map(block => block.y - block.h / 2));
+          state.score = Math.max(0, Math.round((WORLD.floorY - minTop) / 10));
+        }
+        if (state.score > state.highScore) {
+          state.highScore = state.score;
+          localStorage.setItem(STORAGE_KEY, String(state.highScore));
+        }
+        scoreEl.textContent = state.score.toFixed(0);
+        highScoreEl.textContent = state.highScore.toFixed(0);
+      }
+
+      function drawRoundedRect(x, y, w, h, r, color) {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      function render() {
+        ctx.clearRect(0, 0, WORLD.width, WORLD.height);
+
+        ctx.fillStyle = "#d6b484";
+        ctx.fillRect(0, WORLD.floorY, WORLD.width, WORLD.height - WORLD.floorY);
+        ctx.fillStyle = "#c99f65";
+        ctx.fillRect(0, WORLD.floorY - 4, WORLD.width, 4);
+
+        for (const block of state.blocks) {
+          const x = block.x - block.w / 2;
+          const y = block.y - block.h / 2;
+          drawRoundedRect(x, y, block.w, block.h, 6, block.color);
+          ctx.strokeStyle = "rgba(66, 43, 18, 0.32)";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x + 1, y + 1, block.w - 2, block.h - 2);
+        }
+
+        const ghostW = state.nextLength;
+        const gx = Math.min(WORLD.width - WORLD.wallPadding - ghostW / 2, Math.max(WORLD.wallPadding + ghostW / 2, state.pointerX));
+        ctx.globalAlpha = 0.3;
+        drawRoundedRect(gx - ghostW / 2, 18, ghostW, BLOCK_HEIGHT, 6, state.nextColor);
+        ctx.globalAlpha = 1;
+      }
+
+      function tick() {
+        updatePhysics();
+        updateScore();
+        render();
+        requestAnimationFrame(tick);
+      }
+
+      function pointerToCanvasX(event) {
+        const rect = canvas.getBoundingClientRect();
+        const clientX = event.touches ? event.touches[0].clientX : event.clientX;
+        const ratio = WORLD.width / rect.width;
+        return (clientX - rect.left) * ratio;
+      }
+
+      function onPointerMove(event) {
+        state.pointerX = pointerToCanvasX(event);
+      }
+
+      function onPointerDown(event) {
+        event.preventDefault();
+        initAudio();
+        const x = pointerToCanvasX(event);
+        state.pointerX = x;
+        dropBlock(x);
+      }
+
+      canvas.addEventListener("mousemove", onPointerMove);
+      canvas.addEventListener("touchmove", onPointerMove, { passive: true });
+      canvas.addEventListener("mousedown", onPointerDown);
+      canvas.addEventListener("touchstart", onPointerDown, { passive: false });
+
+      makeControls();
+      render();
+      tick();
+    })();
+  </script>
+</body>
+</html>
